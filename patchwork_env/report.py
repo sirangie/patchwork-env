@@ -1,70 +1,63 @@
-"""Render diff results to human-readable text or structured output."""
-
-from typing import List
-from patchwork_env.differ import DiffEntry, summary
-
-ANSI = {
-    'added':     '\033[32m',  # green
-    'removed':   '\033[31m',  # red
-    'changed':   '\033[33m',  # yellow
-    'unchanged': '\033[90m',  # dark grey
-    'reset':     '\033[0m',
-}
-
-PREFIX = {
-    'added': '+',
-    'removed': '-',
-    'changed': '~',
-    'unchanged': ' ',
-}
+"""Render diff results and validation results as text or JSON."""
+from __future__ import annotations
+import json
+from patchwork_env.differ import DiffEntry
+from patchwork_env.validator import ValidationResult
 
 
-def render_text(entries: List[DiffEntry], color: bool = True, show_unchanged: bool = False) -> str:
+# ── diff renderers ────────────────────────────────────────────────────────────
+
+def render_text(entries: list[DiffEntry], *, mask: bool = False) -> str:
     lines = []
     for e in entries:
-        if e.status == 'unchanged' and not show_unchanged:
+        if e.status == "unchanged":
             continue
-
-        prefix = PREFIX[e.status]
-
-        if e.status == 'changed':
-            line = f"{prefix} {e.key}: {e.left_value!r} -> {e.right_value!r}"
-        elif e.status == 'added':
-            line = f"{prefix} {e.key}={e.right_value}"
-        elif e.status == 'removed':
-            line = f"{prefix} {e.key}={e.left_value}"
-        else:
-            line = f"{prefix} {e.key}={e.left_value}"
-
-        if color:
-            line = f"{ANSI[e.status]}{line}{ANSI['reset']}"
-
-        lines.append(line)
-
-    return '\n'.join(lines)
+        old = e.masked_old if mask else e.old_value
+        new = e.masked_new if mask else e.new_value
+        if e.status == "added":
+            lines.append(f"+ {e.key}={new}")
+        elif e.status == "removed":
+            lines.append(f"- {e.key}={old}")
+        elif e.status == "changed":
+            lines.append(f"~ {e.key}: {old!r} -> {new!r}")
+    return "\n".join(lines)
 
 
-def render_summary(entries: List[DiffEntry], color: bool = True) -> str:
+def render_summary(entries: list[DiffEntry]) -> str:
+    from patchwork_env.differ import summary
     s = summary(entries)
-    parts = [
-        f"+{s['added']} added",
-        f"-{s['removed']} removed",
-        f"~{s['changed']} changed",
-        f" {s['unchanged']} unchanged",
-    ]
-    line = '  '.join(parts)
-    if color:
-        line = f"\033[1m{line}{ANSI['reset']}"
-    return line
+    parts = [f"{v} {k}" for k, v in s.items() if v]
+    return ", ".join(parts) if parts else "no differences"
 
 
-def render_json(entries: List[DiffEntry]) -> list:
-    return [
-        {
-            'key': e.key,
-            'status': e.status,
-            'left': e.left_value,
-            'right': e.right_value,
-        }
-        for e in entries
-    ]
+def render_json(entries: list[DiffEntry], *, mask: bool = False) -> str:
+    out = []
+    for e in entries:
+        out.append({
+            "key": e.key,
+            "status": e.status,
+            "old": e.masked_old if mask else e.old_value,
+            "new": e.masked_new if mask else e.new_value,
+        })
+    return json.dumps(out, indent=2)
+
+
+# ── validation renderers ──────────────────────────────────────────────────────
+
+def render_validation_text(result: ValidationResult) -> str:
+    if not result.issues:
+        return "validation passed — no issues found"
+    lines = []
+    for issue in result.issues:
+        lines.append(repr(issue))
+    status = "FAILED" if not result.ok else "PASSED (with warnings)"
+    lines.insert(0, f"Validation {status}:")
+    return "\n".join(lines)
+
+
+def render_validation_json(result: ValidationResult) -> str:
+    return json.dumps({
+        "ok": result.ok,
+        "errors": [{"key": i.key, "message": i.message} for i in result.errors],
+        "warnings": [{"key": i.key, "message": i.message} for i in result.warnings],
+    }, indent=2)

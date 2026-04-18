@@ -1,75 +1,93 @@
-"""CLI entry point for patchwork-env."""
-
+"""CLI entry-point for patchwork-env."""
+from __future__ import annotations
 import argparse
-import json
 import sys
-from pathlib import Path
 
-from patchwork_env.parser import parse_env_file, serialize_env
-from patchwork_env.differ import diff_envs, summary
-from patchwork_env.report import render_text, render_json
+from patchwork_env.parser import parse_env_file
+from patchwork_env.differ import diff_envs
 from patchwork_env.syncer import apply_diff, sync_summary
+from patchwork_env.validator import validate_env
+from patchwork_env.report import (
+    render_text, render_summary, render_json,
+    render_validation_text, render_validation_json,
+)
 
 
-def cmd_diff(args):
-    base = parse_env_file(Path(args.base))
-    target = parse_env_file(Path(args.target))
-    entries = diff_envs(base, target, mask=args.mask)
-
+def cmd_diff(args: argparse.Namespace) -> None:
+    base = parse_env_file(args.base)
+    target = parse_env_file(args.target)
+    entries = diff_envs(base, target)
     if args.format == "json":
-        print(render_json(entries))
+        print(render_json(entries, mask=args.mask))
+    elif args.format == "summary":
+        print(render_summary(entries))
     else:
-        print(render_text(entries))
-        print()
-        print(summary(entries))
+        out = render_text(entries, mask=args.mask)
+        print(out if out else "(no differences)")
 
 
-def cmd_sync(args):
-    base = parse_env_file(Path(args.base))
-    target = parse_env_file(Path(args.target))
-    entries = diff_envs(base, target, mask=False)
-
+def cmd_sync(args: argparse.Namespace) -> None:
+    base = parse_env_file(args.base)
+    target = parse_env_file(args.target)
+    entries = diff_envs(base, target)
     updated = apply_diff(
-        base,
+        target,
         entries,
-        overwrite=not args.no_overwrite,
+        overwrite=args.overwrite,
         add_missing=not args.no_add,
     )
+    print(sync_summary(entries, overwrite=args.overwrite, add_missing=not args.no_add))
+    if args.output:
+        from patchwork_env.parser import serialize_env
+        args.output.write(serialize_env(updated))
+        args.output.close()
 
-    out_path = Path(args.output) if args.output else Path(args.base)
-    out_path.write_text(serialize_env(updated))
-    print(sync_summary(entries, overwrite=not args.no_overwrite, add_missing=not args.no_add))
-    print(f"Written to {out_path}")
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    env = parse_env_file(args.env)
+    template = parse_env_file(args.template)
+    result = validate_env(env, template, allow_extra=not args.strict)
+    if args.format == "json":
+        print(render_validation_json(result))
+    else:
+        print(render_validation_text(result))
+    if not result.ok:
+        sys.exit(1)
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(
-        prog="patchwork-env",
-        description="Diff and sync .env files across environments.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="patchwork-env", description="Diff and sync .env files.")
+    sub = p.add_subparsers(dest="command", required=True)
 
     # diff
-    p_diff = sub.add_parser("diff", help="Show differences between two .env files")
-    p_diff.add_argument("base", help="Base .env file")
-    p_diff.add_argument("target", help="Target .env file to compare against")
-    p_diff.add_argument("--mask", action="store_true", help="Mask secret values in output")
-    p_diff.add_argument("--format", choices=["text", "json"], default="text")
-    p_diff.set_defaults(func=cmd_diff)
+    d = sub.add_parser("diff", help="Show differences between two .env files")
+    d.add_argument("base")
+    d.add_argument("target")
+    d.add_argument("--mask", action="store_true")
+    d.add_argument("--format", choices=["text", "summary", "json"], default="text")
+    d.set_defaults(func=cmd_diff)
 
     # sync
-    p_sync = sub.add_parser("sync", help="Sync base .env with values from target")
-    p_sync.add_argument("base", help="Base .env file to update")
-    p_sync.add_argument("target", help="Target .env file as source of truth")
-    p_sync.add_argument("--output", "-o", help="Write result to this file instead of base")
-    p_sync.add_argument("--no-overwrite", action="store_true", help="Skip changed keys")
-    p_sync.add_argument("--no-add", action="store_true", help="Skip missing keys")
-    p_sync.set_defaults(func=cmd_sync)
+    s = sub.add_parser("sync", help="Sync base env into target")
+    s.add_argument("base")
+    s.add_argument("target")
+    s.add_argument("--overwrite", action="store_true")
+    s.add_argument("--no-add", action="store_true")
+    s.add_argument("--output", type=argparse.FileType("w"), default=None)
+    s.set_defaults(func=cmd_sync)
 
-    return parser
+    # validate
+    v = sub.add_parser("validate", help="Validate an env file against a template")
+    v.add_argument("env")
+    v.add_argument("template")
+    v.add_argument("--strict", action="store_true", help="Disallow extra keys")
+    v.add_argument("--format", choices=["text", "json"], default="text")
+    v.set_defaults(func=cmd_validate)
+
+    return p
 
 
-def main():
+def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)

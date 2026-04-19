@@ -28,6 +28,10 @@ class TransformResult:
     def unchanged_count(self) -> int:
         return sum(1 for op in self.ops if not op.changed)
 
+    def changed_ops(self) -> List[TransformOp]:
+        """Return only the ops where the value actually changed."""
+        return [op for op in self.ops if op.changed]
+
 
 _TRANSFORMS: Dict[str, Callable[[str], str]] = {
     "uppercase": str.upper,
@@ -52,6 +56,12 @@ def transform_env(
     unknown = [t for t in transforms if t not in _TRANSFORMS]
     if unknown:
         raise ValueError(f"Unknown transforms: {unknown}. Available: {list(_TRANSFORMS)}")
+
+    # warn if requested keys don't exist in env
+    if keys:
+        missing = [k for k in keys if k not in env]
+        if missing:
+            raise KeyError(f"Keys not found in env: {missing}")
 
     target_keys = set(keys) if keys else set(env.keys())
     result_env: Dict[str, str] = {}
